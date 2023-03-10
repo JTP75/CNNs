@@ -1,0 +1,11 @@
+name: tf
+channels:
+  - defaults
+dependencies:
+  - numpy
+  - scipy
+  - pandas
+  - tensorflow
+  - matplotlib
+  - ipykernel
+prefix: /home/pacel/anaconda3/envs/tf
