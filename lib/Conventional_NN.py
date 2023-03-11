@@ -6,13 +6,14 @@ if __name__ == "__main__":
 else:
     from lib.utils.activations import sigmoid,dsigmoid
     from lib.utils.perfmets import MSE
+import keras
 
 
 class layer(object):
 
     name:       str         # name
     size:       int         # input size
-    out:        any         # output side
+    OUT:        any         # OUTput side
     din:        any         # input side
     weights:    any         # w
     dw:         any         # w change
@@ -26,29 +27,33 @@ class layer(object):
         pass
 
     @abc.abstractmethod
-    def fprop(self, prev_layer: "layer"):
+    def initw(self):
         pass
 
     @abc.abstractmethod
-    def bprop_delta(self, next_layer: "layer"):
+    def fprop(self, prev: "layer") -> any:
         pass
 
     @abc.abstractmethod
-    def bprop_update(self, prev_layer: "layer", LR):
+    def bprop_delta(self, next: "layer") -> any:
+        pass
+
+    @abc.abstractmethod
+    def bprop_update(self, next: "layer", LR) -> None:
         pass
 
 
 class FClayer(layer):
 
-    out:        np.ndarray
+    OUT:        np.ndarray
     din:        np.ndarray
     weights:    np.ndarray
     dw:         np.ndarray
 
     def __init__(self,size,name="FCL_000"):
 
-        super().__init__(name,size)                     # size = n
-        self.out = None                                 # n+1,1
+        super().__init__(name,size)                     # curr size
+        self.OUT = None                                 # next x 1
         self.din = None                                 # n+1,1
         self.weights = None                             # Nn,n+1
         self.dw = None                                  # Nn,n+1
@@ -60,70 +65,73 @@ class FClayer(layer):
             \tsize                    %d\n
             \tweights                   \n
         """ % (self.name,self.size) + np.array2string(self.weights) + "\n"
-
-    def fprop(self,prev_layer):
-
-        if len(prev_layer.out.shape) == 1:
-            a = prev_layer.out.reshape((prev_layer.shape[0],1))
-        else:
-            a = prev_layer.out
-
-        bias = np.ones((1,a.shape[1]))
-        self.out = self.weights @ np.vstack([bias,a])
-
-        return self.out
     
-    def bprop_delta(self, next_layer: layer):                        ###########################
+    def initw(self, next: layer):
 
-        self.din = (next_layer.weights[:,1:].T @ next_layer.din) * self.out*(1-self.out)        # df(z)
+        shape = (next.size,self.size)
+        self.weights = np.random.uniform(-1.0,1.0,shape)
+
+    def fprop(self, prev: layer):
+
+        if len(prev.OUT.shape) == 1:
+            IN = prev.OUT.reshape((prev.shape[0],1))
+        else:
+            IN = prev.OUT
+
+        #bias = np.ones((1,IN.shape[1]))
+        self.OUT = self.weights @ IN
+
+        return self.OUT
+    
+    def bprop_delta(self, next: layer):       ####
+
+        dOUT = next.din
+        self.din = self.weights.T @ dOUT        # inner prod
+        self.dw = dOUT @ self.OUT.T             # outer prod
         return self.din
     
-    def bprop_update(self, prev_layer: layer, LR):
+    def bprop_update(self, LR):
 
-        if len(prev_layer.out.shape)==1:
-            a = np.reshape(prev_layer.out,(prev_layer.out.shape[0],1))
-        else:
-            a = prev_layer.out
-
-        bias = np.ones((1,a.shape[1]))
-        dW = -np.vstack((bias,a)) @ self.din.T
-        self.weights -= LR * dW.T
+        self.weights -= LR * self.dw
 
 
 class activationlayer(layer):
 
-    out:        np.ndarray
+    OUT:        np.ndarray
     din:        np.ndarray
-    weights:    np.ndarray
-    dw:         np.ndarray
-    __afunc:    function
-    __dafunc:   function
+    weights:    None
+    dw:         None
+    __afunc:    any
+    __dafunc:   any
 
     def __init__(self,size,name="ACL_000"):
 
         super().__init__(name,size)
-        self.out = None                                 # n+1,1
+        self.OUT = None                                 # n+1,1
         self.din = None                                 # n+1,1
         self.weights = None                             # Nn,n+1
         self.dw = None                                  # Nn,n+1
         self.set_activation()
     
-    def set_activation(self, f: function=None, df: function=None):
+    def set_activation(self, f=None, df=None):
 
         self.__afunc = f
         self.__dafunc = df
 
     def __str__(self):
+
         return self.__afunc.__name__()
 
-    def fprop(self, prev_layer: layer):
+    def fprop(self, prev: layer):
         
-        self.out = self.__afunc(prev_layer.out)
-        return self.out
+        IN = prev.OUT
+        self.OUT = self.__afunc(IN)
+        return self.OUT
 
-    def bprop_delta(self, next_layer: layer):
+    def bprop_delta(self, next: layer):
         
-        self.din = self.__dafunc(next_layer.din)
+        dOUT = next.din
+        self.din = self.__dafunc(dOUT)
         return self.din
 
 
@@ -134,12 +142,32 @@ class sigmoidlayer(activationlayer):
         self.set_activation(sigmoid,dsigmoid)
 
 
+class inputlayer(layer):
+
+    OUT:        np.ndarray
+    din:        None
+    weights:    None
+    dw:         None
+    shape:      tuple[int]
+
+    def __init__(self, shape, name="INL_000"):
+
+        self.shape = shape
+        size = np.prod(self.shape)
+        super().__init__(size, name)
+        self.OUT = None
+        
+    def fprop(self, prev: layer, network_input):
+
+        if prev is None: assert network_input is not None
+        self.OUT = network_input
+        return self.OUT
 
 class network(object):
 
     def __init__(self,*layer_sizes):
 
-        self.layers = []
+        self.layers = [layer]
         self.perfmet = MSE
         for sz in layer_sizes:
             self.layers.append(FClayer(sz))
@@ -151,34 +179,32 @@ class network(object):
             str += "Layer %d:\n" % i
             str += self.layers[i].__str__()
         
-    def init_random_weights(self):      #####
+    def init_random_weights(self):
 
-        for i in range(1,len(self.layers)):
-            self.layers[i].weights = np.random.uniform(-1.0,1.0,(self.layers[i].size,self.layers[i-1].size+1))
+        prev = None
+        for curr in self.layers:
+            if prev is not None:
+                prev.initw(curr)
+            prev = curr
         
     def fprop(self,batch):
 
-        x = batch.T
-        self.layers[0].out = x
-        prev_layer = self.layers[0]
-        for layer in self.layers[1:]: 
-            x = layer.fprop(prev_layer)
-            prev_layer = layer
+        prev = None
+        for curr in self.layers:
+            if type(curr)==inputlayer: curr.fprop(prev, batch)
+            curr.fprop(prev)
+            prev = curr
         return x.T
     
     def bprop(self,batch,batch_resp,LR):
 
-        self.layers[-1].din = (batch_resp - self.fprop(batch)).T
-
-        next_layer = self.layers[-1]
-        for layer in self.layers[-2::-1]:
-            layer.bprop_delta(next_layer)
-            next_layer = layer
-
-        prev_layer = self.layers[0]
-        for layer in self.layers[1:]:
-            layer.bprop_update(prev_layer,LR)
-            prev_layer = layer
+        
+        # WEIGHTS_UPDATE_FREQUENCY ?
+        next = None
+        for curr in self.layers[::-1]:
+            if next is None:
+                curr.din = batch
+            
 
     def train(self,X_train,Y_train,LR,epochs,**kwargs):
 
@@ -220,7 +246,7 @@ class network(object):
         np.random.shuffle(data)
 
         print("\n============================================================") if v else None
-        print("Beginning training routine...") if v else None
+        print("Beginning training rOUTine...") if v else None
         
         epoch = 1
         set_idx = batch_size
@@ -285,9 +311,6 @@ class network(object):
         else:
             return full_perf,batch_perf
         
-    @property    
-    def clear(self):
-        self = network(layer.size for layer in self.layers)
 
 
 if __name__ == "__main__":
@@ -307,8 +330,6 @@ if __name__ == "__main__":
     n.init_random_weights()
     fmse,bmse = n.train(x,y,0.01,10000,batch_size=2,print_freq=100)
 
-    n.clear
-
-
+    print(type(sigmoid))
 
 
