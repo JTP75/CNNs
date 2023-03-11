@@ -3,44 +3,45 @@ import abc
 if __name__ == "__main__":
     from utils.activations import sigmoid,dsigmoid
     from utils.perfmets import MSE
-    from utils.helpers
+    from utils.helpers import *
 else:
     from lib.utils.activations import sigmoid,dsigmoid
     from lib.utils.perfmets import MSE
+    from lib.utils.helpers import *
 
 
 class layer(object):
 
     name:       str         # name
-    size:       int         # input size
+    size:       int         # input size        ##### RF    generalize to shape tuples
+    osize:      int         # output size       #####
     OUT:        any         # OUTput side
     din:        any         # input side
     weights:    any         # w
     dw:         any         # w change
 
-    def __init__(self, name, size):
+    def __init__(self, size, osize, name):
+
         self.name = name
         self.size = size
+        self.osize = osize
+        if self.osize is None: 
+            self.osize = self.size
 
     @abc.abstractmethod
-    def __str__(self):
-        pass
+    def __str__(self): pass
 
     @abc.abstractmethod
-    def initw(self):
-        pass
+    def initw(self, next: "layer") -> None: pass
 
     @abc.abstractmethod
-    def fprop(self, prev: "layer") -> any:
-        pass
+    def fprop(self, prev: "layer") -> any: pass
 
     @abc.abstractmethod
-    def bprop_delta(self, next: "layer") -> any:
-        pass
+    def bprop_delta(self, next: "layer") -> any: pass
 
     @abc.abstractmethod
-    def bprop_update(self, LR) -> None:
-        pass
+    def bprop_update(self, LR) -> None: pass
 
 
 class FClayer(layer):
@@ -50,7 +51,9 @@ class FClayer(layer):
     weights:    np.ndarray
     dw:         np.ndarray
 
-    def __init__(self,size,name="FCL_000"): super().__init__(name,size)
+    def __init__(self,size,osize=None,name="FCL_000"): 
+        
+        super().__init__(size,osize,name)
 
     def __str__(self):
         
@@ -71,7 +74,7 @@ class FClayer(layer):
         self.OUT = self.weights @ IN
         return self.OUT
     
-    def bprop_delta(self, next: layer):       ####
+    def bprop_delta(self, next: layer):
 
         dOUT = next.din
         self.din = self.weights.T @ dOUT        # inner prod
@@ -92,7 +95,7 @@ class activationlayer(layer):
 
     def __init__(self,size,name="ACL_000"):
 
-        super().__init__(name,size)
+        super().__init__(size,size,name)
         self.set_activation()
     
     def set_activation(self, f=None, df=None):
@@ -131,13 +134,14 @@ class inputlayer(layer):
     weights:    None
     dw:         None
     shape:      tuple[int]
-    
 
     def __init__(self, shape: tuple, name="INL_000"):
 
+        self.in_size = 0
         self.shape = shape
+        self.out_size = self.shape[0]
         size = np.prod(self.shape)
-        super().__init__(size, name)
+        super().__init__(0, size, name)
         
     def fprop(self, prev: layer, network_input):
 
@@ -146,28 +150,37 @@ class inputlayer(layer):
         return self.OUT
 
 
-class network(object):
+class network:
 
     layers:     list[layer]     # list of MUTABLE layer sub-objects
     __perfmet:  any             # (function) network performance metric
+    in_shape:   tuple
+    out_shape:  tuple
 
-    def __init__(self,*quick_FC_layers,**kwargs):
+    def __init__(self, *quick_FC_layers: int, **kwargs):
 
-        self.layers = [inputlayer()]
+        self.layers = []
         self.__perfmet = MSE
         for key,val in kwargs.items():
             if key in ["perf","perfmet"]:       self.__perfmet = val
             if key in ["load","ld","loadnet"]:  file = val
 
-        for sz in quick_FC_layers:
-            self.layers.append(FClayer(sz))
+        self.in_shape = (quick_FC_layers[0],1)
+        self.out_shape = (quick_FC_layers[-1],1)
+
+        prev_size = self.in_shape[0]
+        for size in quick_FC_layers[1:]: 
+            self.layers.append(FClayer(prev_size,size))
+            self.layers.append(sigmoidlayer(size))
+            prev_size=size
+        self.layers.insert(0,inputlayer(self.in_shape))
 
     def __str__(self):
 
         str = ""
-        for i in range(len(self.layers)):
+        for i,layer in enumerate(self.layers):
             str += "Layer %d:\n" % i
-            str += self.layers[i].__str__()
+            str += layer.__str__()
         
     def init_random_weights(self):
 
@@ -181,10 +194,10 @@ class network(object):
 
         prev = None
         for curr in self.layers:
-            if type(curr)==inputlayer: curr.fprop(prev, batch)
-            curr.fprop(prev)
+            if prev is None: curr.fprop(prev, batch.T)
+            else: network_resp = curr.fprop(prev)
             prev = curr
-        return x.T
+        return network_resp.T
     
     def bprop(self, batch, actual_resp, LR):
 
@@ -197,7 +210,7 @@ class network(object):
                 curr.din = (network_resp - actual_resp)
             else:
                 curr.bprop_delta(next)
-            curr.bprop_update(LR)
+                curr.bprop_update(LR)
 
         new_resp = self.fprop(batch)
         err1 = self.__perfmet(new_resp,actual_resp)
@@ -232,7 +245,7 @@ class network(object):
 
         perf = np.zeros((epochs,))
 
-        assert 0 < batch_size < X_train.shape[0]
+        assert 0 < batch_size <= X_train.shape[0]
 
         data = np.hstack([X_train,Y_train])
         np.random.shuffle(data)
@@ -245,8 +258,8 @@ class network(object):
         set_idx = batch_size
         while epoch <= epochs:
 
-            x = data[set_idx-batch_size:set_idx,:X_train.shape[1]]
-            y = data[set_idx-batch_size:set_idx:,Y_train.shape[1]+1:]
+            x = data[set_idx-batch_size:set_idx, :X_train.shape[1]]
+            y = data[set_idx-batch_size:set_idx, X_train.shape[1]:]
 
             err1,err0 = self.bprop(x,y,LR_fcn(epoch))
             derr = np.abs(err1-err0)
@@ -259,9 +272,10 @@ class network(object):
                 perf[epoch-1] = self.__perfmet(y,yhat)
 
                 if print_freq is not None and epoch%print_freq==0 and v:
+                    err = self.__perfmet(Y_train, self.fprop(X_train))
                     print("\033A    \033[A")
-                    print("Epoch %d\tperformance = %8.6f (" + self.__perfmet.__name__ + ")\tdErr = %8.6f"
-                          % (epoch, perf[epoch-1], derr), end="")
+                    print("Epoch %d\tperformance = %8.6f\tdErr = %8.6f"
+                        % (epoch, perf[epoch-1], derr), end="")
                         
                 if v and check_convergence and derr < derr_threshold:
                 
@@ -296,6 +310,9 @@ class network(object):
             print("\nTraining Complete!")
             print("============================================================\n")
         return perf
+
+    def new_method(self, X_train):
+        return self.fprop(X_train)
         
 
 
@@ -312,10 +329,11 @@ if __name__ == "__main__":
     x = np.array(X_train)
     y = np.array(Y_train)
     
-    n = network(2,4,1)
+    n = network(3,4,1)
     n.init_random_weights()
-    fmse,bmse = n.train(x,y,0.01,10000,batch_size=2,print_freq=100)
+    mse = n.train(x,y,0.01,10000,batch_size=4,print_freq=100)
+    print(mse)
 
-    print(n)
+    #print(n)
 
 
