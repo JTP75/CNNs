@@ -3,10 +3,10 @@ import abc
 if __name__ == "__main__":
     from utils.activations import sigmoid,dsigmoid
     from utils.perfmets import MSE
+    from utils.helpers
 else:
     from lib.utils.activations import sigmoid,dsigmoid
     from lib.utils.perfmets import MSE
-import keras
 
 
 class layer(object):
@@ -39,7 +39,7 @@ class layer(object):
         pass
 
     @abc.abstractmethod
-    def bprop_update(self, next: "layer", LR) -> None:
+    def bprop_update(self, LR) -> None:
         pass
 
 
@@ -50,13 +50,7 @@ class FClayer(layer):
     weights:    np.ndarray
     dw:         np.ndarray
 
-    def __init__(self,size,name="FCL_000"):
-
-        super().__init__(name,size)                     # curr size
-        self.OUT = None                                 # next x 1
-        self.din = None                                 # n+1,1
-        self.weights = None                             # Nn,n+1
-        self.dw = None                                  # Nn,n+1
+    def __init__(self,size,name="FCL_000"): super().__init__(name,size)
 
     def __str__(self):
         
@@ -72,15 +66,9 @@ class FClayer(layer):
         self.weights = np.random.uniform(-1.0,1.0,shape)
 
     def fprop(self, prev: layer):
-
-        if len(prev.OUT.shape) == 1:
-            IN = prev.OUT.reshape((prev.shape[0],1))
-        else:
-            IN = prev.OUT
-
-        #bias = np.ones((1,IN.shape[1]))
+            
+        IN = prev.OUT
         self.OUT = self.weights @ IN
-
         return self.OUT
     
     def bprop_delta(self, next: layer):       ####
@@ -90,9 +78,7 @@ class FClayer(layer):
         self.dw = dOUT @ self.OUT.T             # outer prod
         return self.din
     
-    def bprop_update(self, LR):
-
-        self.weights -= LR * self.dw
+    def bprop_update(self, LR): self.weights -= LR * self.dw
 
 
 class activationlayer(layer):
@@ -107,10 +93,6 @@ class activationlayer(layer):
     def __init__(self,size,name="ACL_000"):
 
         super().__init__(name,size)
-        self.OUT = None                                 # n+1,1
-        self.din = None                                 # n+1,1
-        self.weights = None                             # Nn,n+1
-        self.dw = None                                  # Nn,n+1
         self.set_activation()
     
     def set_activation(self, f=None, df=None):
@@ -149,13 +131,13 @@ class inputlayer(layer):
     weights:    None
     dw:         None
     shape:      tuple[int]
+    
 
-    def __init__(self, shape, name="INL_000"):
+    def __init__(self, shape: tuple, name="INL_000"):
 
         self.shape = shape
         size = np.prod(self.shape)
         super().__init__(size, name)
-        self.OUT = None
         
     def fprop(self, prev: layer, network_input):
 
@@ -163,13 +145,21 @@ class inputlayer(layer):
         self.OUT = network_input
         return self.OUT
 
+
 class network(object):
 
-    def __init__(self,*layer_sizes):
+    layers:     list[layer]     # list of MUTABLE layer sub-objects
+    __perfmet:  any             # (function) network performance metric
 
-        self.layers = [layer]
-        self.perfmet = MSE
-        for sz in layer_sizes:
+    def __init__(self,*quick_FC_layers,**kwargs):
+
+        self.layers = [inputlayer()]
+        self.__perfmet = MSE
+        for key,val in kwargs.items():
+            if key in ["perf","perfmet"]:       self.__perfmet = val
+            if key in ["load","ld","loadnet"]:  file = val
+
+        for sz in quick_FC_layers:
             self.layers.append(FClayer(sz))
 
     def __str__(self):
@@ -187,7 +177,7 @@ class network(object):
                 prev.initw(curr)
             prev = curr
         
-    def fprop(self,batch):
+    def fprop(self,batch) -> np.ndarray:
 
         prev = None
         for curr in self.layers:
@@ -196,23 +186,30 @@ class network(object):
             prev = curr
         return x.T
     
-    def bprop(self,batch,batch_resp,LR):
+    def bprop(self, batch, actual_resp, LR):
 
+        network_resp = self.fprop(batch)
+        err0 = self.__perfmet(network_resp,actual_resp)
         
-        # WEIGHTS_UPDATE_FREQUENCY ?
         next = None
         for curr in self.layers[::-1]:
             if next is None:
-                curr.din = batch
-            
+                curr.din = (network_resp - actual_resp)
+            else:
+                curr.bprop_delta(next)
+            curr.bprop_update(LR)
+
+        new_resp = self.fprop(batch)
+        err1 = self.__perfmet(new_resp,actual_resp)
+
+        return err1,err0
 
     def train(self,X_train,Y_train,LR,epochs,**kwargs):
 
         batch_size = 1
         print_freq = None
-        gofast = False
         LR_fcn = lambda e: LR
-        delta_perf_threshold = 1e-12
+        derr_threshold = 1e-12
         shuffle = True
         check_convergence = False
         v = True
@@ -222,31 +219,27 @@ class network(object):
                 batch_size = val
             elif key=="print_freq":
                 print_freq = val
-            elif key=="fast":
-                gofast = val
             elif key=="LR_fcn":
                 LR_fcn = val
             elif key=="shuffle":
                 shuffle = val
-            elif key=="conv_delta":
-                delta_perf_threshold = val
+            elif key=="derr_threshold":
+                derr_threshold = val
             elif key=="check_convergence":
                 check_convergence = val
             elif key=="v":
                 v = val
 
-        full_perf = np.zeros((epochs,))
-        batch_perf = np.zeros((epochs,))
+        perf = np.zeros((epochs,))
 
-        assert batch_size > 0
-        if batch_size > X_train.shape[0]:
-            batch_size = X_train.shape[0]
+        assert 0 < batch_size < X_train.shape[0]
 
         data = np.hstack([X_train,Y_train])
         np.random.shuffle(data)
 
-        print("\n============================================================") if v else None
-        print("Beginning training rOUTine...") if v else None
+        if v:
+            print("\n============================================================")
+            print("Beginning training routine...")
         
         epoch = 1
         set_idx = batch_size
@@ -255,41 +248,36 @@ class network(object):
             x = data[set_idx-batch_size:set_idx,:X_train.shape[1]]
             y = data[set_idx-batch_size:set_idx:,Y_train.shape[1]+1:]
 
-            self.bprop(x,y,LR_fcn(epoch))
+            err1,err0 = self.bprop(x,y,LR_fcn(epoch))
+            derr = np.abs(err1-err0)
 
             set_idx += batch_size
             if set_idx > X_train.shape[0]:
                 set_idx %= X_train.shape[0]
-                if shuffle: 
-                    np.random.shuffle(data)
 
-                if not gofast:
-                    Y_pred = self.fprop(X_train)
-                    full_perf[epoch-1] = self.perfmet(Y_train,Y_pred)
+                yhat = self.fprop(x)
+                perf[epoch-1] = self.__perfmet(y,yhat)
 
-                    yhat = self.fprop(x)
-                    batch_perf[epoch-1] = self.perfmet(y,yhat)
-
-                    if print_freq is not None and epoch%print_freq==0:
-                        print("\033A    \033[A")
-                        print("Epoch %d\tfull mse = %8.6f\tbatch mse = %8.6f" 
-                            % (epoch, full_perf[epoch-1], batch_perf[epoch-1]), end="")
+                if print_freq is not None and epoch%print_freq==0 and v:
+                    print("\033A    \033[A")
+                    print("Epoch %d\tperformance = %8.6f (" + self.__perfmet.__name__ + ")\tdErr = %8.6f"
+                          % (epoch, perf[epoch-1], derr), end="")
                         
-                if v and check_convergence and epoch > 10 and np.abs(full_perf[epoch-2] - full_perf[epoch-1]) < delta_perf_threshold:
+                if v and check_convergence and derr < derr_threshold:
                 
                     action = input("""  
                         Convergence declared after %d epochs What should the trainer do? > 
-                    """ % epoch).split() if v else ["","",""]
+                    """ % epoch).split()
                     if action[0] in ["return","exit","stop","terminate","end"]:
                         print("Training terminated.\n")
-                        full_perf = np.nonzero(full_perf)
+                        perf = np.nonzero(perf)
                         batch_perf = np.nonzero(batch_perf)
                         break
                     elif action[0] in ["continue","ignore","run","go"]:
                         print("Continuing...\n")
                         check_convergence = False
                     elif action[0] in ["set"]:
-                        if action[1] in ["LR","a","alpha","learning_rate"]:
+                        if action[1] in ["LR","a","alpha","learning_rate","lr"]:
                             LR = np.float64(action[2])
                             print("New learning rate is %.6f\n" % LR)
                         elif action[1] in ["epochs","max_epochs","e","iters"]:
@@ -300,16 +288,14 @@ class network(object):
                             LR *= np.float64(action[2])
                             print("New learning rate is %.6f\n" % LR)
                     else:
-                        print("Invalid keyword(s). Continuing...\n") if v else None
+                        print("Invalid keyword(s). Continuing...\n")
                         
                 epoch += 1
-
-        print("\nTraining Complete!") if v else None
-        print("============================================================\n") if v else None
-        if gofast:
-            return 1,1
-        else:
-            return full_perf,batch_perf
+                if shuffle: np.random.shuffle(data)
+        if v:
+            print("\nTraining Complete!")
+            print("============================================================\n")
+        return perf
         
 
 
@@ -330,6 +316,6 @@ if __name__ == "__main__":
     n.init_random_weights()
     fmse,bmse = n.train(x,y,0.01,10000,batch_size=2,print_freq=100)
 
-    print(type(sigmoid))
+    print(n)
 
 
