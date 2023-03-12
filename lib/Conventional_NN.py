@@ -20,7 +20,7 @@ class layer(object):
     weights:    any         # w
     dw:         any         # w change
 
-    def __init__(self, size, osize, name):
+    def __init__(self, size, osize, name="abstract_base_layer"):
 
         self.name = name
         self.size = size
@@ -33,6 +33,9 @@ class layer(object):
 
     @abc.abstractmethod
     def initw(self, next: "layer") -> None: pass
+
+    @abc.abstractmethod
+    def check_shapes(self) -> None: pass
 
     @abc.abstractmethod
     def fprop(self, prev: "layer") -> any: pass
@@ -51,7 +54,7 @@ class FClayer(layer):
     weights:    np.ndarray
     dw:         np.ndarray
 
-    def __init__(self,size,osize=None,name="FCL_000"): 
+    def __init__(self,size,osize=None,name="FC_layer_0"): 
         
         super().__init__(size,osize,name)
 
@@ -62,6 +65,37 @@ class FClayer(layer):
             \tsize                    %d\n
             \tweights                   \n
         """ % (self.name,self.size) + np.array2string(self.weights) + "\n"
+    
+    def check_shapes(self, prev:layer, next:layer, v=False) -> None:
+        
+        # fprop shapes
+        IN = prev.OUT.shape
+        THETA = self.weights.shape
+        OUT = self.OUT.shape
+        # bprop
+        dIN = self.din.shape
+        dTHETA = self.dw.shape
+        dOUT = next.din.shape
+
+        # verbosity
+        if v:
+            print("\nFCLayer:\t", OUT, "\t=\t", THETA, "\t@\t", IN)
+            print("FCLayer deltas:\t", dTHETA, "\t=\t", dOUT, "\t@\t", dIN[::-1])
+
+        # 
+        #
+
+        # check shape deltas
+        assert IN == dIN, "Assertion failed: IN != dIN"
+        assert OUT == dOUT, "Assertion failed: OUT != dOUT"
+        assert THETA == dTHETA, "Assertion failed: THETA != dTHETA"
+        # check num samples
+        assert IN[1] == OUT[1] == dIN[1] == dOUT[1], "Assertion failed: nsamples"
+        # check shape transitions:
+        assert IN[0] == THETA[1], "Assertion failed: IN[0] != THETA[1]"
+        assert OUT[0] == THETA[0], "Assertion failed: OUT[0] != THETA[0]"
+        assert dIN[0] == dTHETA[1], "Assertion failed: dIN[0] != dTHETA[1]"
+        assert dOUT[0] == dTHETA[0], "Assertion failed: dOUT[0] != dTHETA[0]"
     
     def initw(self, next: layer):
 
@@ -75,9 +109,9 @@ class FClayer(layer):
         return self.OUT
     
     def bprop_delta(self, next: layer):
-
+        
         dOUT = next.din
-        if self.OUT.shape != dOUT.shape: dOUT=dOUT.T 
+        assert dOUT.shape == self.OUT.shape, "dOUT and OUT shapes mismatch."
         self.din = self.weights.T @ dOUT        
         self.dw = dOUT * self.OUT
         return self.din
@@ -85,7 +119,6 @@ class FClayer(layer):
     def bprop_update(self, LR): 
         
         self.weights -= LR * self.dw
-
 class activationlayer(layer):
 
     OUT:        np.ndarray
@@ -95,7 +128,7 @@ class activationlayer(layer):
     __afunc:    any
     __dafunc:   any
 
-    def __init__(self,size,name="ACL_000"):
+    def __init__(self,size,name="activation_layer_0"):
 
         super().__init__(size,size,name)
         self.set_activation()
@@ -124,7 +157,7 @@ class activationlayer(layer):
 
 class sigmoidlayer(activationlayer):
     
-    def __init__(self, size, name="SiGL_000"):
+    def __init__(self, size, name="sigmoid_layer_0"):
         super().__init__(size, name)
         self.set_activation(sigmoid,dsigmoid)
 
@@ -135,19 +168,21 @@ class inputlayer(layer):
     din:        None
     weights:    None
     dw:         None
-    shape:      tuple[int]
+    nsamples:   int
 
-    def __init__(self, shape: tuple, name="INL_000"):
+    def __init__(self, size, name="input_layer_0"):
 
-        self.in_size = 0
-        self.shape = shape
-        self.out_size = self.shape[0]
-        size = np.prod(self.shape)
         super().__init__(0, size, name)
+        self.OUT = np.empty((self.osize,1))
         
     def fprop(self, prev: layer, network_input):
 
-        if prev is None: assert network_input is not None
+        prev = None
+        assert type(network_input) == np.ndarray, "network_input is not numpy.ndarray"
+        if network_input.shape[0] != self.size: network_input = network_input.T
+        assert network_input.shape[0] == self.size, f"network_input must be of shape ({self.size},n)"
+        self.nsamples = network_input.shape[1]
+
         self.OUT = network_input
         return self.OUT
 
@@ -175,7 +210,7 @@ class network:
             self.layers.append(FClayer(prev_size,size))
             self.layers.append(sigmoidlayer(size))
             prev_size=size
-        self.layers.insert(0,inputlayer(self.in_shape))
+        self.layers.insert(0,inputlayer(self.in_shape[0]))
 
     def __str__(self):
 
@@ -183,6 +218,12 @@ class network:
         for i,layer in enumerate(self.layers):
             str += "Layer %d:\n" % i
             str += layer.__str__()
+
+    def check_shapes(self,v=False):
+        for i in range(1,len(self.layers)-1):
+            prev, curr, next = self.layers[i-1], self.layers[i], self.layers[i+1]
+            curr.check_shapes(prev,next,v)
+
         
     def init_random_weights(self):
 
@@ -194,16 +235,21 @@ class network:
         
     def fprop(self,batch) -> np.ndarray:
 
+        N = batch.shape[0]
+
         prev = None
         for curr in self.layers:
-            if prev is None: curr.fprop(prev, batch)
-            else: network_resp = curr.fprop(prev)
+            if prev is None:    # inputlayer
+                curr.fprop(prev, batch)
+                assert self.OUT.shape[1]==N
+            else: 
+                network_resp = curr.fprop(prev)
             prev = curr
         return network_resp
     
     def bprop(self, batch, actual_resp, LR):
 
-        network_resp = self.fprop(batch.T).T
+        network_resp = self.fprop(batch)
         err0 = self.__perfmet(network_resp,actual_resp)
         
         next = None
@@ -314,8 +360,6 @@ class network:
             print("============================================================\n")
         return perf
 
-    def new_method(self, X_train):
-        return self.fprop(X_train)
         
 
 
@@ -334,9 +378,7 @@ if __name__ == "__main__":
     
     n = network(2,3,1)
     n.init_random_weights()
-    mse = n.train(x,y,0.01,10000,batch_size=4,print_freq=100)
-    print(mse)
+    n.train(x,y,0.01,10000,batch_size=4,print_freq=100)
 
-    #print(n)
 
 
