@@ -77,12 +77,14 @@ class FClayer(layer):
     def bprop_delta(self, next: layer):
 
         dOUT = next.din
-        self.din = self.weights.T @ dOUT        # inner prod
-        self.dw = dOUT @ self.OUT.T             # outer prod
+        if self.OUT.shape != dOUT.shape: dOUT=dOUT.T 
+        self.din = self.weights.T @ dOUT        
+        self.dw = dOUT * self.OUT
         return self.din
     
-    def bprop_update(self, LR): self.weights -= LR * self.dw
-
+    def bprop_update(self, LR): 
+        
+        self.weights -= LR * self.dw
 
 class activationlayer(layer):
 
@@ -194,14 +196,14 @@ class network:
 
         prev = None
         for curr in self.layers:
-            if prev is None: curr.fprop(prev, batch.T)
+            if prev is None: curr.fprop(prev, batch)
             else: network_resp = curr.fprop(prev)
             prev = curr
-        return network_resp.T
+        return network_resp
     
     def bprop(self, batch, actual_resp, LR):
 
-        network_resp = self.fprop(batch)
+        network_resp = self.fprop(batch.T).T
         err0 = self.__perfmet(network_resp,actual_resp)
         
         next = None
@@ -211,6 +213,7 @@ class network:
             else:
                 curr.bprop_delta(next)
                 curr.bprop_update(LR)
+            next=curr
 
         new_resp = self.fprop(batch)
         err1 = self.__perfmet(new_resp,actual_resp)
@@ -274,7 +277,7 @@ class network:
                 if print_freq is not None and epoch%print_freq==0 and v:
                     err = self.__perfmet(Y_train, self.fprop(X_train))
                     print("\033A    \033[A")
-                    print("Epoch %d\tperformance = %8.6f\tdErr = %8.6f"
+                    print("Epoch %d\tperformance = %8.6f\tdErr = %f"
                         % (epoch, perf[epoch-1], derr), end="")
                         
                 if v and check_convergence and derr < derr_threshold:
@@ -329,7 +332,7 @@ if __name__ == "__main__":
     x = np.array(X_train)
     y = np.array(Y_train)
     
-    n = network(3,4,1)
+    n = network(2,3,1)
     n.init_random_weights()
     mse = n.train(x,y,0.01,10000,batch_size=4,print_freq=100)
     print(mse)
