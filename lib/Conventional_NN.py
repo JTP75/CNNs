@@ -35,7 +35,7 @@ class layer(object):
     def initw(self, next: "layer") -> None: pass
 
     @abc.abstractmethod
-    def check_shapes(self) -> None: pass
+    def check_shapes(self, prev: "layer", next: "layer") -> None: pass
 
     @abc.abstractmethod
     def fprop(self, prev: "layer") -> any: pass
@@ -77,13 +77,10 @@ class FClayer(layer):
         dTHETA = self.dw.shape
         dOUT = next.din.shape
 
-        # verbosity
+        # verbosity (dbg)
         if v:
             print("\nFCLayer:\t", OUT, "\t=\t", THETA, "\t@\t", IN)
             print("FCLayer deltas:\t", dTHETA, "\t=\t", dOUT, "\t@\t", dIN[::-1])
-
-        # 
-        #
 
         # check shape deltas
         assert IN == dIN, "Assertion failed: IN != dIN"
@@ -112,8 +109,9 @@ class FClayer(layer):
         
         dOUT = next.din
         assert dOUT.shape == self.OUT.shape, "dOUT and OUT shapes mismatch."
-        self.din = self.weights.T @ dOUT        
-        self.dw = dOUT * self.OUT
+        self.din = self.weights.T @ dOUT
+        self.dw = self.OUT @ self.din.T
+        assert self.dw.shape == self.weights.shape, "dWeights and weights shapes mismatch."
         return self.din
     
     def bprop_update(self, LR): 
@@ -180,7 +178,7 @@ class inputlayer(layer):
         prev = None
         assert type(network_input) == np.ndarray, "network_input is not numpy.ndarray"
         if network_input.shape[0] != self.size: network_input = network_input.T
-        assert network_input.shape[0] == self.size, f"network_input must be of shape ({self.size},n)"
+        assert network_input.shape[0] == self.osize, f"network_input must be of shape ({self.osize},n)"
         self.nsamples = network_input.shape[1]
 
         self.OUT = network_input
@@ -241,25 +239,26 @@ class network:
         for curr in self.layers:
             if prev is None:    # inputlayer
                 curr.fprop(prev, batch)
-                assert self.OUT.shape[1]==N
+                assert curr.nsamples==N
             else: 
                 network_resp = curr.fprop(prev)
+            assert curr.OUT.shape[1]==N
             prev = curr
         return network_resp
     
     def bprop(self, batch, actual_resp, LR):
 
         network_resp = self.fprop(batch)
-        err0 = self.__perfmet(network_resp,actual_resp)
+        err0 = self.__perfmet(network_resp, actual_resp.T)
         
         next = None
         for curr in self.layers[::-1]:
             if next is None:
-                curr.din = (network_resp - actual_resp)
+                curr.din = (network_resp - actual_resp.T)
             else:
                 curr.bprop_delta(next)
                 curr.bprop_update(LR)
-            next=curr
+            next = curr
 
         new_resp = self.fprop(batch)
         err1 = self.__perfmet(new_resp,actual_resp)
@@ -304,17 +303,17 @@ class network:
             print("Beginning training routine...")
         
         epoch = 1
-        set_idx = batch_size
+        set_idx = 0
         while epoch <= epochs:
 
-            x = data[set_idx-batch_size:set_idx, :X_train.shape[1]]
-            y = data[set_idx-batch_size:set_idx, X_train.shape[1]:]
+            x = data[set_idx:set_idx+batch_size, :X_train.shape[1]]
+            y = data[set_idx:set_idx+batch_size, X_train.shape[1]:]
 
             err1,err0 = self.bprop(x,y,LR_fcn(epoch))
             derr = np.abs(err1-err0)
 
             set_idx += batch_size
-            if set_idx > X_train.shape[0]:
+            if set_idx >= X_train.shape[0]:
                 set_idx %= X_train.shape[0]
 
                 yhat = self.fprop(x)

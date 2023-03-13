@@ -25,12 +25,8 @@ for i in range(y_class.size):
 
 n = network(4,4,3)
 n.init_random_weights()
-fmse,bmse = n.train(x, y_1hot, 0.01, 10000, batch_size=50, v=False)
-MSE_000 = fmse[-1]
+err = n.train(x, y_1hot, 0.01, 10000, batch_size=50, v=True, print_freq=98)
+MSE_000 = err[-1]
 print("Training MSE = %f" % MSE_000)
 
-epochs = np.arange(fmse.size)
-#plt.plot(epochs,fmse)
-#plt.show()
-
-n.clear
+epochs = np.arange(err.size)

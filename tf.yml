@@ -8,4 +8,5 @@ dependencies:
   - tensorflow
   - matplotlib
   - ipykernel
+  - pytorch
 prefix: /home/pacel/anaconda3/envs/tf
