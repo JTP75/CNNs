@@ -1,5 +1,6 @@
 import numpy as np
 import abc
+from torch.multiprocessing import Pool
 if __name__ == "__main__":
     from utils.activations import sigmoid,dsigmoid
     from utils.perfmets import MSE
@@ -13,26 +14,31 @@ else:
 class layer(object):
 
     name:       str         # name
-    size:       int         # input size        ##### RF    generalize to shape tuples
-    osize:      int         # output size       #####
+    inshape:    tuple[int]  # input size
+    outshape:   tuple[int]  # output size
+    bias:       bool        # bias
     OUT:        any         # OUTput side
-    din:        any         # input side
-    weights:    any         # w
+    dIN:        any         # input side
+    w:          any         # w
     dw:         any         # w change
 
-    def __init__(self, size, osize, name="abstract_base_layer"):
+    def __init__(self, inshape, outshape=None, bias=False, name="abstract_base_layer"):
 
+        if type(inshape)==int: inshape = (inshape,1)
+        if type(outshape)==int: outshape = (outshape,1)
         self.name = name
-        self.size = size
-        self.osize = osize
-        if self.osize is None: 
-            self.osize = self.size
+        self.inshape = inshape
+        self.outshape = outshape
+        self.bias = bias
+
+        if self.outshape is None: 
+            self.outshape = self.inshape
 
     @abc.abstractmethod
     def __str__(self): pass
 
     @abc.abstractmethod
-    def initw(self, next: "layer") -> None: pass
+    def initw(self) -> None: pass
 
     @abc.abstractmethod
     def check_shapes(self, prev: "layer", next: "layer") -> None: pass
@@ -46,17 +52,22 @@ class layer(object):
     @abc.abstractmethod
     def bprop_update(self, LR) -> None: pass
 
-
 class FClayer(layer):
 
     OUT:        np.ndarray
-    din:        np.ndarray
-    weights:    np.ndarray
+    dIN:        np.ndarray
+    w:          np.ndarray
     dw:         np.ndarray
 
-    def __init__(self,size,osize=None,name="FC_layer_0"): 
+    def __init__(self,inshape,outshape=None,bias=True,name="FC_layer_0"): 
         
-        super().__init__(size,osize,name)
+        super().__init__(inshape,outshape,bias,name)
+        if self.bias:   wshape = (self.outshape[0],self.inshape[0]+1)
+        else:           wshape = (self.outshape[0],self.inshape[0])
+        self.OUT = np.empty(self.outshape,dtype=np.float64)
+        self.dIN = np.empty(self.inshape,dtype=np.float64)
+        self.w = np.empty(wshape,dtype=np.float64)
+        self.dw = np.empty(wshape,dtype=np.float64)
 
     def __str__(self):
         
@@ -64,18 +75,18 @@ class FClayer(layer):
             \tname                    %s\n
             \tsize                    %d\n
             \tweights                   \n
-        """ % (self.name,self.size) + np.array2string(self.weights) + "\n"
+        """ % (self.name,self.size) + np.array2string(self.w) + "\n"
     
     def check_shapes(self, prev:layer, next:layer, v=False) -> None:
         
         # fprop shapes
         IN = prev.OUT.shape
-        THETA = self.weights.shape
+        THETA = self.w.shape
         OUT = self.OUT.shape
         # bprop
-        dIN = self.din.shape
+        dIN = self.dIN.shape
         dTHETA = self.dw.shape
-        dOUT = next.din.shape
+        dOUT = next.dIN.shape
 
         # verbosity (dbg)
         if v:
@@ -94,42 +105,47 @@ class FClayer(layer):
         assert dIN[0] == dTHETA[1], "Assertion failed: dIN[0] != dTHETA[1]"
         assert dOUT[0] == dTHETA[0], "Assertion failed: dOUT[0] != dTHETA[0]"
     
-    def initw(self, next: layer):
+    def initw(self):
 
-        shape = (next.size,self.size)
-        self.weights = np.random.uniform(-1.0,1.0,shape)
+        self.w = np.random.uniform(-1.0,1.0,self.w.shape)
 
     def fprop(self, prev: layer):
             
-        IN = prev.OUT
-        self.OUT = self.weights @ IN
+        IN: np.ndarray = prev.OUT
+        if self.bias:
+            B_vect = np.ones((1,IN.shape[1]))
+            IN = np.vstack((B_vect,IN))
+        self.OUT = self.w @ IN
         return self.OUT
     
     def bprop_delta(self, next: layer):
         
-        dOUT = next.din
+        dOUT = next.dIN
         assert dOUT.shape == self.OUT.shape, "dOUT and OUT shapes mismatch."
-        self.din = self.weights.T @ dOUT
-        self.dw = self.OUT @ self.din.T
-        assert self.dw.shape == self.weights.shape, "dWeights and weights shapes mismatch."
-        return self.din
+        self.dIN = (self.w.T @ dOUT)
+        self.dw = self.OUT @ self.dIN.T
+        self.dIN = self.dIN[1:]
+        assert self.dw.shape == self.w.shape, "dw and w shapes mismatch."
+        return self.dIN
     
     def bprop_update(self, LR): 
         
-        self.weights -= LR * self.dw
+        self.w -= LR * self.dw
+
 class activationlayer(layer):
 
     OUT:        np.ndarray
-    din:        np.ndarray
-    weights:    None
+    dIN:        np.ndarray
+    w:          None
     dw:         None
     __afunc:    any
     __dafunc:   any
 
-    def __init__(self,size,name="activation_layer_0"):
+    def __init__(self,shape,name="activation_layer_0"):
 
-        super().__init__(size,size,name)
-        self.set_activation()
+        super().__init__(shape,shape,False,name)
+        self.OUT = np.empty(self.outshape,dtype=np.float64)
+        self.dIN = np.empty(self.outshape,dtype=np.float64)
     
     def set_activation(self, f=None, df=None):
 
@@ -148,37 +164,36 @@ class activationlayer(layer):
 
     def bprop_delta(self, next: layer):
         
-        dOUT = next.din
-        self.din = self.__dafunc(dOUT)
-        return self.din
-
-
+        dOUT = next.dIN
+        self.dIN = self.__dafunc(dOUT)
+        return self.dIN
+    
 class sigmoidlayer(activationlayer):
     
-    def __init__(self, size, name="sigmoid_layer_0"):
-        super().__init__(size, name)
+    def __init__(self, shape, name="sigmoid_layer_0"):
+        super().__init__(shape, name)
         self.set_activation(sigmoid,dsigmoid)
-
 
 class inputlayer(layer):
 
     OUT:        np.ndarray
-    din:        None
-    weights:    None
+    dIN:        None
+    w:          None
     dw:         None
     nsamples:   int
 
-    def __init__(self, size, name="input_layer_0"):
+    def __init__(self, shape, name="input_layer_0"):
 
-        super().__init__(0, size, name)
-        self.OUT = np.empty((self.osize,1))
+        super().__init__(0, shape, False, name)
+        self.OUT = np.empty(self.outshape)
+        self.nsamples = 0
         
     def fprop(self, prev: layer, network_input):
 
         prev = None
         assert type(network_input) == np.ndarray, "network_input is not numpy.ndarray"
-        if network_input.shape[0] != self.size: network_input = network_input.T
-        assert network_input.shape[0] == self.osize, f"network_input must be of shape ({self.osize},n)"
+        if network_input.shape[0] != self.outshape[0]: network_input = network_input.T
+        assert network_input.shape[0] == self.outshape[0], f"network_input for N samples must be of shape ({self.outshape[0]},N)"
         self.nsamples = network_input.shape[1]
 
         self.OUT = network_input
@@ -210,6 +225,8 @@ class network:
             prev_size=size
         self.layers.insert(0,inputlayer(self.in_shape[0]))
 
+        return
+
     def __str__(self):
 
         str = ""
@@ -228,7 +245,7 @@ class network:
         prev = None
         for curr in self.layers:
             if prev is not None:
-                prev.initw(curr)
+                prev.initw()
             prev = curr
         
     def fprop(self,batch) -> np.ndarray:
@@ -254,7 +271,7 @@ class network:
         next = None
         for curr in self.layers[::-1]:
             if next is None:
-                curr.din = (network_resp - actual_resp.T)
+                curr.dIN = (network_resp - actual_resp.T)
             else:
                 curr.bprop_delta(next)
                 curr.bprop_update(LR)
@@ -274,6 +291,7 @@ class network:
         shuffle = True
         check_convergence = False
         v = True
+        ncpus = 1
 
         for key,val in kwargs.items():
             if key=="batch_size":
@@ -290,14 +308,14 @@ class network:
                 check_convergence = val
             elif key=="v":
                 v = val
-
-        perf = np.zeros((epochs,))
+            elif key=="ncpus":
+                ncpus = val
 
         assert 0 < batch_size <= X_train.shape[0]
 
         data = np.hstack([X_train,Y_train])
         np.random.shuffle(data)
-
+        perf = np.zeros((epochs,))
         if v:
             print("\n============================================================")
             print("Beginning training routine...")
@@ -309,8 +327,22 @@ class network:
             x = data[set_idx:set_idx+batch_size, :X_train.shape[1]]
             y = data[set_idx:set_idx+batch_size, X_train.shape[1]:]
 
-            err1,err0 = self.bprop(x,y,LR_fcn(epoch))
-            derr = np.abs(err1-err0)
+            alpha = LR_fcn(epoch)
+            pfunc = lambda x,y: self.bprop(x,y,alpha)
+
+            """
+            xp = np.array_split(x,ncpus)
+            yp = np.array_split(y,ncpus)
+            pdata = [(xp[i],yp[i]) for i in range(batch_size)]
+
+            with Pool(ncpus) as pool:
+                err1,err0 = pool.map(pfunc,pdata)
+                pool.close()
+                pool.join()
+            """
+
+            err1,err0 = self.bprop(x,y,alpha)
+            derr = err1-err0
 
             set_idx += batch_size
             if set_idx >= X_train.shape[0]:
@@ -328,7 +360,7 @@ class network:
                 if v and check_convergence and derr < derr_threshold:
                 
                     action = input("""  
-                        Convergence declared after %d epochs What should the trainer do? > 
+                        Convergence declared after %d epochs. What should the trainer do? > 
                     """ % epoch).split()
                     if action[0] in ["return","exit","stop","terminate","end"]:
                         print("Training terminated.\n")
@@ -363,21 +395,19 @@ class network:
 
 
 if __name__ == "__main__":
+
     X_train = [[0,0],
                [1,0],
                [0,1],
                [1,1]]
-    Y_train = [[0],
-               [1],
-               [1],
-               [0]]
+    Y_train = [[0,1],
+               [1,0],
+               [1,0],
+               [0,0]]
     
     x = np.array(X_train)
     y = np.array(Y_train)
     
-    n = network(2,3,1)
+    n = network(2,6,2)
     n.init_random_weights()
-    n.train(x,y,0.01,10000,batch_size=4,print_freq=100)
-
-
-
+    n.train(x,y,0.03,10000,batch_size=1,print_freq=100)
