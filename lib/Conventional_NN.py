@@ -1,6 +1,5 @@
 import numpy as np
 import abc
-from torch.multiprocessing import Pool
 if __name__ == "__main__":
     from utils.activations import sigmoid,dsigmoid
     from utils.perfmets import MSE
@@ -51,6 +50,10 @@ class layer(object):
 
     @abc.abstractmethod
     def bprop_update(self, LR) -> None: pass
+
+    @property
+    @abc.abstractmethod
+    def has_learnable_params(self) -> bool: pass
 
 class FClayer(layer):
 
@@ -132,6 +135,10 @@ class FClayer(layer):
         
         self.w -= LR * self.dw
 
+    @property
+    def has_learnable_params(self) -> bool: 
+        return True
+
 class activationlayer(layer):
 
     OUT:        np.ndarray
@@ -168,6 +175,10 @@ class activationlayer(layer):
         self.dIN = self.__dafunc(dOUT)
         return self.dIN
     
+    @property
+    def has_learnable_params(self) -> bool: 
+        return False
+    
 class sigmoidlayer(activationlayer):
     
     def __init__(self, shape, name="sigmoid_layer_0"):
@@ -199,6 +210,9 @@ class inputlayer(layer):
         self.OUT = network_input
         return self.OUT
 
+    @property
+    def has_learnable_params(self) -> bool: 
+        return False
 
 class network:
 
@@ -392,8 +406,6 @@ class network:
         return perf
 
         
-
-
 if __name__ == "__main__":
 
     X_train = [[0,0],
