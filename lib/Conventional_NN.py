@@ -21,7 +21,7 @@ class layer(object):
     w:          any         # w
     dw:         any         # w change
 
-    def __init__(self, inshape, outshape=None, bias=False, name="abstract_base_layer"):
+    def __init__(self, inshape, outshape=None, bias=False, name=None):
 
         if type(inshape)==int: inshape = (inshape,1)
         if type(outshape)==int: outshape = (outshape,1)
@@ -386,6 +386,10 @@ class network:
             print("\nTraining Complete!")
             print("============================================================\n")
         return perf
+    
+    def print(self):
+        for layer in self.layers:
+            print(layer.name)
 
         
 if __name__ == "__main__":
@@ -403,6 +407,9 @@ if __name__ == "__main__":
     y = np.array(Y_train)
     
     n = network(2,6,2)
+
+    n.print()
+
     n.init_random_weights()
     n.train(x,y,0.03,10000,batch_size=4,print_freq=10)
 
