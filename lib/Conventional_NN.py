@@ -9,6 +9,7 @@ else:
     from lib.utils.perfmets import MSE
     from lib.utils.helpers import *
 
+np.seterr("raise")
 
 class layer(object):
 
@@ -125,15 +126,21 @@ class FClayer(layer):
         if self.bias:
             B_vect = np.ones((1,IN.shape[1]))
             IN = np.vstack((B_vect,IN))
-        self.OUT = self.w @ IN
+        try:
+            self.OUT = self.w @ IN
+        except FloatingPointError:
+            raise RuntimeError
         return self.OUT
     
     def bprop_delta(self, next: layer):
         
         dOUT = next.dIN
         assert dOUT.shape == self.OUT.shape, "dOUT and OUT shapes mismatch."
-        self.dIN = (self.w.T @ dOUT)
-        self.dw = self.OUT @ self.dIN.T
+        try:
+            self.dIN = (self.w.T @ dOUT)
+            self.dw = self.OUT @ self.dIN.T
+        except FloatingPointError:
+            raise RuntimeError
         self.dIN = self.dIN[1:]
         assert self.dw.shape == self.w.shape, "dw and w shapes mismatch."
         return self.dIN
@@ -240,9 +247,9 @@ class network:
         self.out_shape = (quick_FC_layers[-1],1)
 
         prev_size = self.in_shape[0]
-        for size in quick_FC_layers[1:]: 
-            self.layers.append(FClayer(prev_size,size))
-            self.layers.append(sigmoidlayer(size))
+        for idx,size in enumerate(quick_FC_layers[1:]): 
+            self.layers.append(FClayer(prev_size,size,name=f"FC_Layer_{idx}"))
+            self.layers.append(sigmoidlayer(size,name=f"Sigmoid_Layer_{idx}"))
             prev_size=size
         self.layers.insert(0,inputlayer(self.in_shape[0]))
 
@@ -375,8 +382,7 @@ class network:
                 if v and print_freq is not None and epoch%print_freq==0:
                     err = self.__perfmet(Y_train, self.fprop(X_train))
                     print("\033A    \033[A")
-                    print("Epoch %d\tperformance = %8.6f\tdErr = %f"
-                        % (epoch, perf[epoch-1], derr), end="")
+                    print(f"Epoch {epoch}\tperformance = {perf[epoch-1]}\tdErr = {derr}", end="")
                         
                 epoch += 1
 
@@ -410,8 +416,9 @@ if __name__ == "__main__":
 
     n.print()
 
+    exit()
     n.init_random_weights()
-    n.train(x,y,0.03,10000,batch_size=4,print_freq=10)
+    n.train(x,y,0.1,10000,batch_size=4,print_freq=10)
 
     resp = n.fprop(x)
     print(resp)
