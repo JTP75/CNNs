@@ -34,26 +34,33 @@ class layer(object):
             self.outshape = self.inshape
 
     @abc.abstractmethod
-    def __str__(self): pass
+    def __str__(self):
+        pass
 
     @abc.abstractmethod
-    def initw(self) -> None: pass
+    def initw(self) -> None:
+        pass
 
     @abc.abstractmethod
-    def check_shapes(self, prev: "layer", next: "layer") -> None: pass
+    def check_shapes(self, prev: "layer", next: "layer") -> None:
+        pass
 
     @abc.abstractmethod
-    def fprop(self, prev: "layer") -> any: pass
+    def fprop(self, prev: "layer") -> any: 
+        pass
 
     @abc.abstractmethod
-    def bprop_delta(self, next: "layer") -> any: pass
+    def bprop_delta(self, next: "layer") -> any:
+        pass
 
     @abc.abstractmethod
-    def bprop_update(self, LR) -> None: pass
+    def bprop_update(self, LR) -> None:
+        pass
 
     @property
     @abc.abstractmethod
-    def has_learnable_params(self) -> bool: pass
+    def has_learnable_params(self) -> bool:
+        pass
 
 class FClayer(layer):
 
@@ -268,7 +275,7 @@ class network:
 
         prev = None
         for curr in self.layers:
-            if prev is None:    # inputlayer
+            if prev is None:
                 curr.fprop(prev, batch)
                 assert curr.nsamples==N
             else: 
@@ -365,41 +372,16 @@ class network:
                 yhat = self.fprop(x)
                 perf[epoch-1] = self.__perfmet(y,yhat)
 
-                if print_freq is not None and epoch%print_freq==0 and v:
+                if v and print_freq is not None and epoch%print_freq==0:
                     err = self.__perfmet(Y_train, self.fprop(X_train))
                     print("\033A    \033[A")
                     print("Epoch %d\tperformance = %8.6f\tdErr = %f"
                         % (epoch, perf[epoch-1], derr), end="")
                         
-                if v and check_convergence and derr < derr_threshold:
-                
-                    action = input("""  
-                        Convergence declared after %d epochs. What should the trainer do? > 
-                    """ % epoch).split()
-                    if action[0] in ["return","exit","stop","terminate","end"]:
-                        print("Training terminated.\n")
-                        perf = np.nonzero(perf)
-                        batch_perf = np.nonzero(batch_perf)
-                        break
-                    elif action[0] in ["continue","ignore","run","go"]:
-                        print("Continuing...\n")
-                        check_convergence = False
-                    elif action[0] in ["set"]:
-                        if action[1] in ["LR","a","alpha","learning_rate","lr"]:
-                            LR = np.float64(action[2])
-                            print("New learning rate is %.6f\n" % LR)
-                        elif action[1] in ["epochs","max_epochs","e","iters"]:
-                            epochs = int(action[2])
-                            print("New learning rate is %.6f\n" % LR)
-                    elif action[0] in ["scale"]:
-                        if action[1] in ["LR","a","alpha","learning_rate"]:
-                            LR *= np.float64(action[2])
-                            print("New learning rate is %.6f\n" % LR)
-                    else:
-                        print("Invalid keyword(s). Continuing...\n")
-                        
                 epoch += 1
-                if shuffle: np.random.shuffle(data)
+
+                if shuffle:
+                    np.random.shuffle(data)
         if v:
             print("\nTraining Complete!")
             print("============================================================\n")
@@ -422,4 +404,7 @@ if __name__ == "__main__":
     
     n = network(2,6,2)
     n.init_random_weights()
-    n.train(x,y,0.03,10000,batch_size=1,print_freq=100)
+    n.train(x,y,0.03,10000,batch_size=4,print_freq=10)
+
+    resp = n.fprop(x)
+    print(resp)
